@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import tensorflow as tf
-from tensorflow.keras import layers, models, optimizers, losses, Model # type: ignore
+from tensorflow.keras import layers, models, optimizers, losses, Model
 import numpy as np
 import matplotlib.pyplot as plt
 from collections import deque
@@ -13,13 +13,14 @@ import scipy.io
 from scipy import signal as sp_signal
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.metrics import accuracy_score
 
 CWRU_DATA_PATH = '/Users/kasimesen/Desktop/Kodlar/Python/12KDriveEndBearing'
 SEQUENCE_LENGTH = 1024
 STFT_NPERSEG = 24
 STFT_NOVERLAP = 12
 STFT_NFFT = 128
-FREQ_BINS = STFT_NFFT // 2 + 1
+FREQ_BINS = STFT_NFFT // 2 + 1 
 TIME_BINS = (SEQUENCE_LENGTH - STFT_NPERSEG) // (STFT_NPERSEG - STFT_NOVERLAP) + 1
 YOUR_INPUT_SHAPE = (FREQ_BINS, TIME_BINS, 1)
 YOUR_NUMBER_OF_CLASSES = 10
@@ -30,7 +31,7 @@ YOUR_CNN_BATCH_SIZE = 40
 N_FOLDS = 5
 LOAD_CONDITIONS = [0, 1, 2, 3]
 
-BUFFER_SIZE = 35000
+BUFFER_SIZE = 50000
 BATCH_SIZE_DDQN = 50
 GAMMA = 0.99
 Q_LEARNING_RATE = 1e-4
@@ -106,7 +107,10 @@ class DDQNAgent:
         self.state_dim = state_dim; self.action_dim = action_dim; self.buffer_size = buffer_size; self.batch_size = batch_size; self.gamma = tf.constant(gamma, dtype=tf.float32); self.target_update_freq = target_update_freq
         self.main_net = QNetwork(state_dim, action_dim); self.target_net = QNetwork(state_dim, action_dim);
         self.main_net.build((None, state_dim)); self.target_net.build((None, state_dim)); self.target_net.set_weights(self.main_net.get_weights())
-        self.optimizer = optimizers.Adam(learning_rate=q_learning_rate); self.replay_buffer = deque(maxlen=buffer_size); self.rescaler = Rescaler(); self.loss_fn = losses.MeanSquaredError()
+        self.optimizer = optimizers.Adam(learning_rate=q_learning_rate); self.replay_buffer = deque(maxlen=buffer_size); self.rescaler = Rescaler();
+        # --- DÜZELTME: Huber Loss Kullan ---
+        self.loss_fn = losses.Huber() # MSE yerine Huber
+        # --- DÜZELTME BİTTİ ---
         self._update_counter = tf.Variable(0, dtype=tf.int64, trainable=False, name="update_counter");
     def store_transition(self, state, action, reward, next_state, done): state = np.asarray(state, dtype=np.float32); next_state = np.asarray(next_state, dtype=np.float32); transition = (state, int(action), float(reward), next_state, bool(done)); self.replay_buffer.append(transition)
     def sample_batch(self):
@@ -357,34 +361,17 @@ def load_cwru_data(data_path, sequence_length, file_code_mapping,
     print(f"Tüm yükler için veri yüklendi ve işlendi. Toplam örnek: {x.shape[0]}, Şekil: {x.shape[1:]}")
     return x.astype(np.float32), y.astype(np.int32), stft_output_shape
 
-# --- DÜZELTME: Makaledeki CNN yapısı (Son MaxPool dahil) ---
 def create_cnn_model(input_shape, num_classes):
     print(f"CNN modeli oluşturuluyor (Makale Yapısı - Tam), giriş şekli: {input_shape}")
     model = models.Sequential([
         layers.Input(shape=input_shape),
-        # L1 & L2
-        layers.Conv2D(filters=64, kernel_size=(7, 7), strides=(1, 1), padding='same', activation='relu'),
-        layers.MaxPool2D(pool_size=(2, 2), strides=(2, 2)),
-        # L3 & L4
-        layers.Conv2D(filters=96, kernel_size=(5, 5), strides=(1, 1), padding='same', activation='relu'),
-        layers.MaxPool2D(pool_size=(2, 2), strides=(2, 2)),
-        # L5 & L6
-        layers.Conv2D(filters=128, kernel_size=(3, 3), strides=(1, 1), padding='same', activation='relu'),
-        layers.MaxPool2D(pool_size=(2, 2), strides=(2, 2)),
-        # L7 & L8
-        layers.Conv2D(filters=256, kernel_size=(3, 3), strides=(1, 1), padding='same', activation='relu'),
-        layers.MaxPool2D(pool_size=(2, 2), strides=(2, 2)),
-        # L9 & L10
-        layers.Conv2D(filters=256, kernel_size=(3, 3), strides=(1, 1), padding='same', activation='relu'),
-        layers.MaxPool2D(pool_size=(2, 2), strides=(2, 2)),
-        # L11 & L12
-        layers.Conv2D(filters=256, kernel_size=(3, 3), strides=(1, 1), padding='same', activation='relu'),
-        layers.MaxPool2D(pool_size=(2, 2), strides=(2, 2)), # <-- SON MAXPOOL GERİ EKLENDİ
-        # FC Layers
-        layers.Flatten(),
-        layers.Dense(2560, activation='relu'),
-        layers.Dense(512, activation='relu'),
-        # Output Layer
+        layers.Conv2D(filters=64, kernel_size=(7, 7), strides=(1, 1), padding='same', activation='relu'), layers.MaxPool2D(pool_size=(2, 2), strides=(2, 2)),
+        layers.Conv2D(filters=96, kernel_size=(5, 5), strides=(1, 1), padding='same', activation='relu'), layers.MaxPool2D(pool_size=(2, 2), strides=(2, 2)),
+        layers.Conv2D(filters=128, kernel_size=(3, 3), strides=(1, 1), padding='same', activation='relu'), layers.MaxPool2D(pool_size=(2, 2), strides=(2, 2)),
+        layers.Conv2D(filters=256, kernel_size=(3, 3), strides=(1, 1), padding='same', activation='relu'), layers.MaxPool2D(pool_size=(2, 2), strides=(2, 2)),
+        layers.Conv2D(filters=256, kernel_size=(3, 3), strides=(1, 1), padding='same', activation='relu'), layers.MaxPool2D(pool_size=(2, 2), strides=(2, 2)),
+        layers.Conv2D(filters=256, kernel_size=(3, 3), strides=(1, 1), padding='same', activation='relu'), layers.MaxPool2D(pool_size=(2, 2), strides=(2, 2)),
+        layers.Flatten(), layers.Dense(2560, activation='relu'), layers.Dense(512, activation='relu'),
         layers.Dense(num_classes, activation='softmax')
     ])
     return model
@@ -392,7 +379,7 @@ def create_cnn_model(input_shape, num_classes):
 def create_optimizers(initial_lr):
     main_optimizer = optimizers.SGD(learning_rate=initial_lr, momentum=0.9)
     game_optimizer = optimizers.SGD(learning_rate=initial_lr, momentum=0.9)
-    print(f"SGD optimizatörleri oluşturuldu, başlangıç LR: {initial_lr}")
+    print(f"SGD optimizatörleri (momentum=0.9) oluşturuldu, başlangıç LR: {initial_lr}")
     return main_optimizer, game_optimizer
 
 def create_ddqn_agent():
@@ -463,6 +450,20 @@ def print_time_summary(all_histories, total_training_time):
     print(f"{'Diğer İşlemler':<15} | {avg_others:<15.1f} | {perc_others:<10.1f}")
     print("-"*30); print(f"{'Toplam (Ort.)':<15} | {avg_total:<15.1f} | {100.0:<10.1f}"); print("="*30)
 
+def evaluate_ensemble(models_list, x_data, y_data, batch_size):
+    if not models_list: print("Değerlendirme için model bulunamadı."); return 0.0
+    all_probas = []
+    for model in models_list:
+        if not model._is_compiled:
+             print(f"Uyarı: Ensemble değerlendirmesi için model '{model.name}' derleniyor...")
+             model.compile(optimizer='sgd', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+        probas = model.predict(x_data, batch_size=batch_size, verbose=0)
+        all_probas.append(probas)
+    avg_probas = np.mean(all_probas, axis=0)
+    y_pred_ensemble = np.argmax(avg_probas, axis=1)
+    ensemble_accuracy = accuracy_score(y_data, y_pred_ensemble)
+    return ensemble_accuracy
+
 
 if __name__ == "__main__":
     print("TensorFlow Sürümü:", tf.__version__)
@@ -483,6 +484,7 @@ if __name__ == "__main__":
 
     all_histories = []
     all_val_accuracies = []
+    all_ensemble_accuracies = {}
     experiment_count = 0
     total_start_time = time.time()
     actual_input_shape = None
@@ -513,14 +515,21 @@ if __name__ == "__main__":
         print(f"\n===== Deney Grubu (Formalite Yük Koşulu: {load_hp_label} HP) =====")
         skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=42 + load_hp_label)
         fold_num = 0
+        models_for_ensemble = []
+        x_val_combined = []
+        y_val_combined = []
+
         for train_index, val_index in skf.split(X_all_loads, y_all_loads):
             fold_num += 1; experiment_count += 1
             print(f"\n--- Deney {experiment_count}/20: (Yük Etiketi={load_hp_label}HP), Kat={fold_num}/{N_FOLDS} ---")
             x_train_fold, x_val_fold = X_all_loads[train_index], X_all_loads[val_index]; y_train_fold, y_val_fold = y_all_loads[train_index], y_all_loads[val_index]
+
+            x_val_combined.append(x_val_fold)
+            y_val_combined.append(y_val_fold)
+
             print("Modeller, ajan ve ortam yeniden oluşturuluyor...")
             current_input_shape = actual_input_shape if actual_input_shape else YOUR_INPUT_SHAPE
             main_cnn = create_cnn_model(current_input_shape, YOUR_NUMBER_OF_CLASSES);
-            main_cnn.summary()
             game_cnn = models.clone_model(main_cnn)
             game_cnn.build((None,) + current_input_shape); game_cnn.set_weights(main_cnn.get_weights())
             main_optimizer, game_optimizer = create_optimizers(INITIAL_LEARNING_RATE)
@@ -536,6 +545,8 @@ if __name__ == "__main__":
                  )
                  fold_end_time = time.time(); print(f"Kat {fold_num} eğitimi tamamlandı. Süre: {fold_end_time - fold_start_time:.2f}s")
                  all_histories.append(training_history_fold)
+                 models_for_ensemble.append(trained_main_cnn)
+
                  print("Doğrulama için model derleniyor...")
                  trained_main_cnn.compile(optimizer=main_optimizer, loss=loss_fn_instance, metrics=['accuracy'])
                  print("Doğrulama seti üzerinde değerlendirme yapılıyor...")
@@ -544,11 +555,29 @@ if __name__ == "__main__":
             except Exception as e:
                  print(f"\nHata: (Yük Etiketi={load_hp_label}HP), Kat={fold_num} eğitimi sırasında hata oluştu: {e}"); import traceback; traceback.print_exc(); all_val_accuracies.append(np.nan)
 
+        if models_for_ensemble and len(models_for_ensemble) == N_FOLDS:
+             print(f"\n--- Yük={load_hp_label}HP için Ensemble Değerlendirmesi ---")
+             x_val_all_folds = np.concatenate(x_val_combined, axis=0)
+             y_val_all_folds = np.concatenate(y_val_combined, axis=0)
+             print(f"Ensemble değerlendirme verisi şekli: {x_val_all_folds.shape}")
+             ensemble_acc = evaluate_ensemble(models_for_ensemble, x_val_all_folds, y_val_all_folds, YOUR_CNN_BATCH_SIZE)
+             all_ensemble_accuracies[load_hp_label] = ensemble_acc
+             print(f"Yük={load_hp_label}HP Ensemble Doğruluğu (Birleştirilmiş Val Setleri Üzerinde): {ensemble_acc:.4f}")
+        else:
+             print(f"Uyarı: Yük={load_hp_label}HP için ensemble oluşturulamadı (yeterli model yok).")
+             all_ensemble_accuracies[load_hp_label] = np.nan
+
+
     total_end_time = time.time()
     print("\n" + "="*30); print("TÜM DENEYLER TAMAMLANDI"); print(f"Toplam Süre: {total_end_time - total_start_time:.2f} saniye"); print(f"Tamamlanan Deney Sayısı: {len(all_val_accuracies)}")
     valid_accuracies = [acc for acc in all_val_accuracies if not np.isnan(acc)]
-    if valid_accuracies: mean_accuracy = np.mean(valid_accuracies); std_accuracy = np.std(valid_accuracies); print(f"Ortalama Doğrulama Doğruluğu ({len(valid_accuracies)} geçerli deney üzerinden): {mean_accuracy:.4f} ± {std_accuracy:.4f}")
+    if valid_accuracies: mean_accuracy = np.mean(valid_accuracies); std_accuracy = np.std(valid_accuracies); print(f"Ortalama Bireysel Kat Doğruluğu ({len(valid_accuracies)} geçerli deney üzerinden): {mean_accuracy:.4f} ± {std_accuracy:.4f}")
     else: print("Hiçbir deney başarıyla tamamlanamadı.")
+
+    valid_ensemble_acc = [acc for acc in all_ensemble_accuracies.values() if not np.isnan(acc)]
+    if valid_ensemble_acc:
+        mean_ensemble_acc = np.mean(valid_ensemble_acc)
+        print(f"Ortalama Ensemble Doğruluğu ({len(valid_ensemble_acc)} yük grubu üzerinden): {mean_ensemble_acc:.4f}")
 
     print("\nTüm deneylerin LR eğrileri çizdiriliyor...")
     all_lr_data = [hist['lr'] for hist in all_histories if hist and 'lr' in hist]
