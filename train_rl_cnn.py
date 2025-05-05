@@ -20,7 +20,7 @@ SEQUENCE_LENGTH = 1024
 STFT_NPERSEG = 24
 STFT_NOVERLAP = 12
 STFT_NFFT = 128
-FREQ_BINS = STFT_NFFT // 2 + 1 
+FREQ_BINS = STFT_NFFT // 2 + 1
 TIME_BINS = (SEQUENCE_LENGTH - STFT_NPERSEG) // (STFT_NPERSEG - STFT_NOVERLAP) + 1
 YOUR_INPUT_SHAPE = (FREQ_BINS, TIME_BINS, 1)
 YOUR_NUMBER_OF_CLASSES = 10
@@ -42,6 +42,7 @@ EPSILON = 0.3
 FLOAT32_MAX = np.finfo(np.float32).max / 10
 FLOAT32_MIN = np.finfo(np.float32).min / 10
 CLIP_RANGE = 1e9
+MIN_LR_THRESHOLD = 1e-6
 
 class QNetwork(Model):
     def __init__(self, state_dim: int = YOUR_STATE_DIM, action_dim: int = YOUR_ACTION_DIM, hidden_units: list = Q_NET_ARCH, **kwargs):
@@ -108,9 +109,7 @@ class DDQNAgent:
         self.main_net = QNetwork(state_dim, action_dim); self.target_net = QNetwork(state_dim, action_dim);
         self.main_net.build((None, state_dim)); self.target_net.build((None, state_dim)); self.target_net.set_weights(self.main_net.get_weights())
         self.optimizer = optimizers.Adam(learning_rate=q_learning_rate); self.replay_buffer = deque(maxlen=buffer_size); self.rescaler = Rescaler();
-        # --- DÜZELTME: Huber Loss Kullan ---
-        self.loss_fn = losses.Huber() # MSE yerine Huber
-        # --- DÜZELTME BİTTİ ---
+        self.loss_fn = losses.Huber()
         self._update_counter = tf.Variable(0, dtype=tf.int64, trainable=False, name="update_counter");
     def store_transition(self, state, action, reward, next_state, done): state = np.asarray(state, dtype=np.float32); next_state = np.asarray(next_state, dtype=np.float32); transition = (state, int(action), float(reward), next_state, bool(done)); self.replay_buffer.append(transition)
     def sample_batch(self):
@@ -201,7 +200,8 @@ class RL_Env:
         elif action == 1: new_lr = self.current_lr / self.alpha2
         elif action == 3: new_lr = self.current_lr * self.alpha2
         elif action == 4: new_lr = self.current_lr * self.alpha1
-        new_lr_clipped = tf.clip_by_value(new_lr, 1e-7, 1.0); self.current_lr.assign(new_lr_clipped)
+        new_lr_clipped = tf.clip_by_value(new_lr, MIN_LR_THRESHOLD, 1.0); # Minimum LR sınırı kullanıldı
+        self.current_lr.assign(new_lr_clipped)
         loss_float = float(current_loss.numpy()) if tf.is_tensor(current_loss) else float(current_loss); reward = 1.0 / (loss_float + 1e-9) if np.isfinite(loss_float) else 0.0
         reward = np.clip(reward, -1000.0, 1000.0); return self.current_lr, float(reward)
     def get_current_lr(self) -> tf.Tensor: return self.current_lr
@@ -258,7 +258,8 @@ def train_cnn_with_rl(main_cnn, game_cnn, main_optimizer, game_optimizer, loss_f
                 elif action == 1: temp_lr = temp_lr / rl_env.alpha2
                 elif action == 3: temp_lr = temp_lr * rl_env.alpha2
                 elif action == 4: temp_lr = temp_lr * rl_env.alpha1
-                temp_lr = tf.clip_by_value(temp_lr, 1e-7, 1.0); game_optimizer.learning_rate.assign(temp_lr)
+                temp_lr = tf.clip_by_value(temp_lr, MIN_LR_THRESHOLD, 1.0); # Minimum LR sınırı kullanıldı
+                game_optimizer.learning_rate.assign(temp_lr)
                 loss_game, grads_game = cnn_train_step(game_cnn, game_optimizer, loss_fn, x_batch, y_batch)
                 if tf.math.is_finite(loss_game):
                     current_game_loss_sum += float(loss_game.numpy()); reward_game = 1.0 / (float(loss_game.numpy()) + 1e-9); reward_game = np.clip(reward_game, -1000.0, 1000.0)
@@ -362,7 +363,7 @@ def load_cwru_data(data_path, sequence_length, file_code_mapping,
     return x.astype(np.float32), y.astype(np.int32), stft_output_shape
 
 def create_cnn_model(input_shape, num_classes):
-    print(f"CNN modeli oluşturuluyor (Makale Yapısı - Tam), giriş şekli: {input_shape}")
+    print(f"CNN modeli oluşturuluyor (Makale Yapısı - Son MaxPool Yok), giriş şekli: {input_shape}")
     model = models.Sequential([
         layers.Input(shape=input_shape),
         layers.Conv2D(filters=64, kernel_size=(7, 7), strides=(1, 1), padding='same', activation='relu'), layers.MaxPool2D(pool_size=(2, 2), strides=(2, 2)),
@@ -370,15 +371,16 @@ def create_cnn_model(input_shape, num_classes):
         layers.Conv2D(filters=128, kernel_size=(3, 3), strides=(1, 1), padding='same', activation='relu'), layers.MaxPool2D(pool_size=(2, 2), strides=(2, 2)),
         layers.Conv2D(filters=256, kernel_size=(3, 3), strides=(1, 1), padding='same', activation='relu'), layers.MaxPool2D(pool_size=(2, 2), strides=(2, 2)),
         layers.Conv2D(filters=256, kernel_size=(3, 3), strides=(1, 1), padding='same', activation='relu'), layers.MaxPool2D(pool_size=(2, 2), strides=(2, 2)),
-        layers.Conv2D(filters=256, kernel_size=(3, 3), strides=(1, 1), padding='same', activation='relu'), layers.MaxPool2D(pool_size=(2, 2), strides=(2, 2)),
+        layers.Conv2D(filters=256, kernel_size=(3, 3), strides=(1, 1), padding='same', activation='relu'),
+        layers.MaxPool2D(pool_size=(2, 2), strides=(2, 2)),
         layers.Flatten(), layers.Dense(2560, activation='relu'), layers.Dense(512, activation='relu'),
         layers.Dense(num_classes, activation='softmax')
     ])
     return model
 
 def create_optimizers(initial_lr):
-    main_optimizer = optimizers.SGD(learning_rate=initial_lr, momentum=0.9)
-    game_optimizer = optimizers.SGD(learning_rate=initial_lr, momentum=0.9)
+    main_optimizer = optimizers.SGD(learning_rate=initial_lr)
+    game_optimizer = optimizers.SGD(learning_rate=initial_lr)
     print(f"SGD optimizatörleri (momentum=0.9) oluşturuldu, başlangıç LR: {initial_lr}")
     return main_optimizer, game_optimizer
 
@@ -454,9 +456,8 @@ def evaluate_ensemble(models_list, x_data, y_data, batch_size):
     if not models_list: print("Değerlendirme için model bulunamadı."); return 0.0
     all_probas = []
     for model in models_list:
-        if not model._is_compiled:
-             print(f"Uyarı: Ensemble değerlendirmesi için model '{model.name}' derleniyor...")
-             model.compile(optimizer='sgd', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+        print(f"Ensemble değerlendirmesi için model '{model.name}' derleniyor...")
+        model.compile(optimizer='sgd', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
         probas = model.predict(x_data, batch_size=batch_size, verbose=0)
         all_probas.append(probas)
     avg_probas = np.mean(all_probas, axis=0)
@@ -530,6 +531,7 @@ if __name__ == "__main__":
             print("Modeller, ajan ve ortam yeniden oluşturuluyor...")
             current_input_shape = actual_input_shape if actual_input_shape else YOUR_INPUT_SHAPE
             main_cnn = create_cnn_model(current_input_shape, YOUR_NUMBER_OF_CLASSES);
+            # main_cnn.summary()
             game_cnn = models.clone_model(main_cnn)
             game_cnn.build((None,) + current_input_shape); game_cnn.set_weights(main_cnn.get_weights())
             main_optimizer, game_optimizer = create_optimizers(INITIAL_LEARNING_RATE)
@@ -537,7 +539,7 @@ if __name__ == "__main__":
             loss_fn_instance = losses.SparseCategoricalCrossentropy()
             train_dataset_fold = tf.data.Dataset.from_tensor_slices((x_train_fold, y_train_fold)).shuffle(buffer_size=len(x_train_fold)).batch(YOUR_CNN_BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
             data_loader_fold = train_dataset_fold
-            config = { 'epochs': 10, 'step4game': 5 }
+            config = { 'epochs': 5, 'step4game': 5 } 
             fold_start_time = time.time()
             try:
                  trained_main_cnn, _, training_history_fold = train_cnn_with_rl(
@@ -583,9 +585,10 @@ if __name__ == "__main__":
     all_lr_data = [hist['lr'] for hist in all_histories if hist and 'lr' in hist]
     all_steps_data = [hist['step'] for hist in all_histories if hist and 'step' in hist]
     if all_lr_data and len(all_lr_data) == len(all_steps_data):
+        print(f"Toplam {len(all_lr_data)} adet LR geçmişi çizdirilecek.") # Kontrol için eklendi
         plot_all_lr_curves(all_lr_data, all_steps_data)
     else:
-        print("Uyarı: Geçerli LR geçmiş verisi bulunamadı veya adım sayıları eşleşmiyor.")
+        print(f"Uyarı: Geçerli LR geçmiş verisi bulunamadı veya adım sayıları eşleşmiyor. LR verisi: {len(all_lr_data)}, Adım verisi: {len(all_steps_data)}")
 
     print("\nOrtalama LR eğrisi çizdiriliyor...")
     if all_histories:
@@ -595,7 +598,15 @@ if __name__ == "__main__":
 
     print("\nZamanlama özeti hesaplanıyor...")
     if all_histories:
-        print_time_summary(all_histories, total_end_time - total_start_time)
+        # --- DÜZELTME: print_time_summary çağrısını kontrol et ---
+        if all(h and all(key in h for key in ['game_cnn_time', 'ddqn_time', 'main_cnn_time']) for h in all_histories):
+             print_time_summary(all_histories, total_end_time - total_start_time)
+        else:
+             print("Uyarı: Zamanlama özeti için gerekli zaman anahtarları tüm geçmişlerde bulunmuyor.")
+             # Hangi geçmişlerin eksik olduğunu bulmaya çalış (isteğe bağlı)
+             # for i, h in enumerate(all_histories):
+             #     if not h or not all(key in h for key in ['game_cnn_time', 'ddqn_time', 'main_cnn_time']):
+             #         print(f"  Eksik zaman anahtarı olan geçmiş indeksi: {i}")
     else:
         print("Zamanlama özeti için geçmiş verisi yok.")
 
